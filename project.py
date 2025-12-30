@@ -9,15 +9,19 @@ import re
 import io
 import os
 
-# Configuration
+# --- CONFIGURATION ---
 DB_CONFIG = {
     "host": "localhost",
-    "user": "mysql_username",        # <------- change your MySQL username
-    "password": "mysql_password", # <------- change your MySQL password
+    "user": "username",        # <------- change your MySQL username
+    "password": "password", # <------- change your MySQL password
     "database": "Personal_Finance_Dashboard_db"
 }
 
 MAX_SPENDING_LIMIT = 20000
+
+# ==========================================
+# 1. LOGIC FUNCTIONS
+# ==========================================
 
 def categorize_transaction(remark, rules):
     if not isinstance(remark, str) or not rules:
@@ -34,6 +38,7 @@ def get_filtered_query(query_name, start_date=None, end_date=None, max_debit=Non
         "TOTALS_SUMMARY": "SELECT SUM(credit_amt) AS total_income, SUM(debit_amt) AS total_spending FROM transactions",
         "SPENDING_OVER_TIME": "SELECT transaction_date, debit_amt AS spending FROM transactions WHERE debit_amt > 0",
         "TRANSACTIONS_TABLE": "SELECT transaction_date, remark, debit_amt, credit_amt, category FROM transactions",
+        "SPENDING_BY_CATEGORY": "SELECT category, SUM(debit_amt) AS total_spent FROM transactions WHERE debit_amt > 0",
     }
     if query_name not in base_queries: return ""
 
@@ -59,10 +64,19 @@ def get_filtered_query(query_name, start_date=None, end_date=None, max_debit=Non
         connector = " AND " if "WHERE" in query else " WHERE "
         query += connector + " AND ".join(where_clauses)
     
-    if query_name == "TRANSACTIONS_TABLE": query += " ORDER BY transaction_date DESC"
-    elif query_name == "SPENDING_OVER_TIME": query += " ORDER BY transaction_date ASC"
+    # Sorting & Grouping Logic
+    if query_name == "TRANSACTIONS_TABLE": 
+        query += " ORDER BY transaction_date DESC"
+    elif query_name == "SPENDING_OVER_TIME": 
+        query += " ORDER BY transaction_date ASC"
+    elif query_name == "SPENDING_BY_CATEGORY": 
+        query += " GROUP BY category"
     
     return query
+
+# ==========================================
+# 2. DATABASE FUNCTIONS
+# ==========================================
 
 def get_db_connection():
     try: return mysql.connector.connect(**DB_CONFIG)
@@ -123,6 +137,10 @@ def fetch_rules():
                 rules = dict(zip(df['keyword_match'].astype(str).str.upper(), df['category_name']))
         except: pass
     return rules
+
+# ==========================================
+# 3. PDF PROCESSING
+# ==========================================
 
 def process_uploaded_pdf(uploaded_file, conn):
     init_db()
@@ -199,11 +217,14 @@ def process_uploaded_pdf(uploaded_file, conn):
     except Exception as e:
         st.error(f"Error: {e}")
 
+# ==========================================
+# 4. MAIN DASHBOARD
+# ==========================================
+
 def main():
     st.set_page_config(layout="wide", page_title="Pocket Money Tracker")
     st.title("Personal Finance Dashboard")
 
-    # --- SESSION STATE TO CONTROL FILE UPLOADER RESET ---
     if "uploader_key" not in st.session_state:
         st.session_state["uploader_key"] = 0
     
@@ -215,7 +236,6 @@ def main():
     with st.sidebar:
         st.header("Upload")
         
-        # KEY PARAMETER: Changing this key forces the widget to rebuild (clearing the file)
         uploaded_file = st.file_uploader(
             "Bank Statement (PDF)", 
             type="pdf", 
@@ -223,7 +243,6 @@ def main():
         )
         
         if uploaded_file:
-            # We don't clear cache immediately here to avoid loop, we rely on logic
             process_uploaded_pdf(uploaded_file, conn)
         
         st.header("Actions")
@@ -234,16 +253,12 @@ def main():
                 conn.commit()
                 c.close()
                 st.success("Database Wiped!")
-                
-                # CRITICAL: Change key to kill the file uploader so it doesn't re-upload automatically
                 st.session_state["uploader_key"] += 1 
-                
                 st.cache_data.clear()
                 st.rerun()
             except Error as e:
                 st.error(f"Reset Failed: {e}")
 
-        # Filters
         st.header("Filters")
         try:
             df_d = run_query("SELECT MIN(transaction_date) as mn, MAX(transaction_date) as mx FROM transactions")
@@ -257,7 +272,6 @@ def main():
         s_date = st.date_input("Start", mn)
         e_date = st.date_input("End", mx)
         
-        # Safety for None types
         if s_date is None: s_date = datetime.now().date()
         if e_date is None: e_date = datetime.now().date()
         
@@ -281,22 +295,37 @@ def main():
         if 'total_income' in df_t.columns and pd.notna(df_t['total_income'].iloc[0]): inc = df_t['total_income'].iloc[0]
         if 'total_spending' in df_t.columns and pd.notna(df_t['total_spending'].iloc[0]): spn = df_t['total_spending'].iloc[0]
 
+    # Metrics
     c1, c2, c3 = st.columns(3)
     c1.metric("Income", f"₹{inc:,.0f}")
     c2.metric("Spending", f"₹{spn:,.0f}")
     c3.metric("Net Flow", f"₹{inc-spn:,.0f}")
     
-    col_gr, col_tb = st.columns([1, 1])
-    with col_gr:
+    st.markdown("---")
+    
+    # CHARTS SECTION (Side by Side)
+    c_bar, c_pie = st.columns(2)
+    
+    with c_bar:
         q_trend = get_filtered_query("SPENDING_OVER_TIME", s_str, e_str, MAX_SPENDING_LIMIT, cat_sel, day_sel)
         df_trend = run_query(q_trend)
         if not df_trend.empty:
-            st.plotly_chart(px.bar(df_trend, x='transaction_date', y='spending', title="Daily Spending"), use_container_width=True)
+            st.plotly_chart(px.bar(df_trend, x='transaction_date', y='spending', title="Daily Spending Trend"), use_container_width=True)
+        else:
+            st.info("No data for Bar Chart")
             
-    with col_tb:
-        st.subheader("Transaction List")
-        q_tab = get_filtered_query("TRANSACTIONS_TABLE", s_str, e_str, MAX_SPENDING_LIMIT, cat_sel, day_sel)
-        st.dataframe(run_query(q_tab), use_container_width=True, height=400)
+    with c_pie:
+        q_pie = get_filtered_query("SPENDING_BY_CATEGORY", s_str, e_str, MAX_SPENDING_LIMIT, cat_sel, day_sel)
+        df_pie = run_query(q_pie)
+        if not df_pie.empty:
+            st.plotly_chart(px.pie(df_pie, values='total_spent', names='category', title="Spending by Category", hole=0.4), use_container_width=True)
+        else:
+            st.info("No data for Pie Chart")
+            
+    # TABLE SECTION (Full Width)
+    st.subheader("Transaction List")
+    q_tab = get_filtered_query("TRANSACTIONS_TABLE", s_str, e_str, MAX_SPENDING_LIMIT, cat_sel, day_sel)
+    st.dataframe(run_query(q_tab), use_container_width=True, height=400)
         
     if conn.is_connected(): conn.close()
 
