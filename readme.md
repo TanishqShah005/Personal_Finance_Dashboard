@@ -1,5 +1,8 @@
 # Personal Finance Dashboard
 
+# Video Demo: 
+https://youtu.be/JxRjlpvjz_s
+
 # Description:
 A comprehensive personal finance dashboard built with Python and Streamlit. This application solves the tedious problem of manual expense tracking by automating the extraction, cleaning, and categorization of transaction data directly from bank statement PDFs.
 Instead of manually entering data into Excel, users can simply upload their PDF statements. The app processes the file, identifies merchants (like Swiggy, Uber, or Netflix), and visualizes spending habits instantly.
@@ -49,3 +52,4 @@ streamlit run project.py
 
 # Credits:
 Created by Tanishq for the *CS50P* Final Project.
+
